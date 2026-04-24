@@ -153,9 +153,36 @@ def update_issue(issue_number, body):
         return None
 
 
+def format_push_runs_timeline(all_runs_data):
+    """Format push runs as a timeline for bisect reference."""
+    push_runs = all_runs_data.get("push_runs", [])
+    if not push_runs:
+        return ""
+
+    lines = [
+        "### Push Runs Timeline (Bisect Reference)",
+        "",
+        "| Time (UTC) | Commit | Status | Link |",
+        "|------------|--------|--------|------|",
+    ]
+    for run in push_runs:
+        sha = run["head_sha"][:12]
+        conclusion = run["conclusion"]
+        status = "PASS" if conclusion == "success" else "FAIL" if conclusion == "failure" else conclusion.upper()
+        tag = "[PASS]" if conclusion == "success" else "[FAIL]" if conclusion == "failure" else "[?]"
+        created = run.get("created_at", "?")
+        url = run.get("html_url", "")
+        lines.append(f"| {created} | `{sha}` | {tag} {status} | [link]({url}) |")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Create tracking issue from CI results")
     parser.add_argument("--input", type=str, required=True, help="Input JSON from check_nightly_status.py")
+    parser.add_argument("--all-runs", type=str, default=None,
+                        help="all_runs.json for push runs timeline")
     parser.add_argument("--dry-run", action="store_true", help="Print issue body without creating")
     args = parser.parse_args()
 
@@ -166,7 +193,16 @@ def main():
     with open(args.input) as f:
         data = json.load(f)
 
+    # Load push runs if available
+    all_runs_data = {}
+    if args.all_runs:
+        with open(args.all_runs) as f:
+            all_runs_data = json.load(f)
+
     body = format_issue_body(data)
+    timeline = format_push_runs_timeline(all_runs_data)
+    if timeline:
+        body = body + "\n\n" + timeline
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     commit_short = data.get("commit_sha", "unknown")[:12]
     n_failures = len(data.get("unique_failed_tests", []))

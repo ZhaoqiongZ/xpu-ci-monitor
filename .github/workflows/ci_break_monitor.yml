@@ -31,8 +31,10 @@ jobs:
         run: |
           python tools/ci_monitor/check_nightly_status.py \
             --days ${{ inputs.days || '1' }} \
+            --event schedule \
             ${{ inputs.parse_logs && '--parse-logs' || '--parse-logs' }} \
-            --output ci_results.json
+            --output ci_results.json \
+            --save-all-runs all_runs.json
 
       - name: Create tracking issue (if failures)
         if: steps.check.outputs.has_failures == 'true'
@@ -40,11 +42,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python tools/ci_monitor/create_tracking_issue.py \
-            --input ci_results.json
+            --input ci_results.json \
+            --all-runs all_runs.json
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ci-results
-          path: ci_results.json
+          path: |
+            ci_results.json
+            all_runs.json
