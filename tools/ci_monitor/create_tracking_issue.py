@@ -297,17 +297,27 @@ def main():
 
     # Check if an issue for the same commit already exists (update it)
     # Different commit = new issue
+    issue_number = None
     existing = check_existing_issue(commit_short)
     if existing:
         print(f"Updating existing issue #{existing} (same commit {commit_short})")
         update_issue(existing, body)
+        issue_number = existing
     else:
         labels = ["ci-nightly"]
         if data["status"] != "ALL_PASS":
             labels.append("has-failures")
         if n_new > 0:
             labels.append("new-failures")
-        create_issue(title, body, labels)
+        issue = create_issue(title, body, labels)
+        if issue:
+            issue_number = issue["number"]
+
+    # Set GitHub Actions output for downstream steps
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output and issue_number:
+        with open(gh_output, "a") as f:
+            f.write(f"issue_number={issue_number}\n")
 
 
 if __name__ == "__main__":

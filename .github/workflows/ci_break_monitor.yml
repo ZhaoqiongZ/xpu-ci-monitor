@@ -37,6 +37,7 @@ jobs:
             --save-all-runs all_runs.json
 
       - name: Create tracking issue (if failures)
+        id: create_issue
         if: steps.check.outputs.has_failures == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,6 +45,16 @@ jobs:
           python tools/ci_monitor/create_tracking_issue.py \
             --input ci_results.json \
             --all-runs all_runs.json
+
+      - name: Classify failures and create sub-issues
+        if: steps.create_issue.outputs.issue_number
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python tools/ci_monitor/classify_failures.py \
+            --input ci_results.json \
+            --summary-issue ${{ steps.create_issue.outputs.issue_number }} \
+            --days 7
 
       - name: Upload results
         if: always()
