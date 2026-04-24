@@ -21,76 +21,151 @@ TRACKING_REPO = os.environ.get("TRACKING_REPO", "ZhaoqiongZ/xpu-ci-monitor")
 
 
 def format_issue_body(data):
-    """Format CI failure data into a GitHub issue body."""
+    """Format CI failure data into a GitHub issue body.
+
+    Groups failures by test file with collapsible sections to stay
+    within GitHub's 65536 character limit.
+    """
+    from collections import OrderedDict
+
     commit = data.get("commit_sha", "unknown")[:12]
+    full_commit = data.get("commit_sha", "")
     failures = data.get("failures", [])
     unique_tests = data.get("unique_failed_tests", [])
-    
+    new_tests = data.get("new_failed_tests", [])
+    existing_tests = data.get("existing_failed_tests", [])
+    fixed_tests = data.get("fixed_tests", [])
+    prev_commit = data.get("prev_commit_sha", "")
+
+    n_new = len(new_tests)
+    n_existing = len(existing_tests)
+    n_fixed = len(fixed_tests)
+
     # Header
     lines = [
         "## XPU CI Nightly Status Report",
         "",
         f"**Date:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
-        f"**PyTorch Commit:** [`{commit}`](https://github.com/pytorch/pytorch/commit/{data.get('commit_sha', '')})",
+        f"**PyTorch Commit:** [`{commit}`](https://github.com/pytorch/pytorch/commit/{full_commit})",
+    ]
+    if prev_commit:
+        prev_short = prev_commit[:12]
+        lines.append(f"**Previous Commit:** [`{prev_short}`](https://github.com/pytorch/pytorch/commit/{prev_commit})")
+    lines.extend([
         f"**Status:** {'ALL PASS' if data['status'] == 'ALL_PASS' else 'HAS FAILURES'}",
         f"**Failed Jobs:** {len(failures)}",
-        f"**Unique Failed Tests:** {len(unique_tests)}",
-        "",
-        "---",
-        "",
-    ]
+        f"**Total Failed Tests:** {len(unique_tests)}",
+    ])
+    if n_new > 0 or n_existing > 0:
+        lines.append(f"**New Failures:** {n_new} | **Existing:** {n_existing} | **Fixed:** {n_fixed}")
+    lines.extend(["", "---", ""])
 
     if not unique_tests:
         lines.append("All XPU tests passed! No action needed.")
         return "\n".join(lines)
 
-    # Summary table
-    lines.append("### Failed Tests Summary")
-    lines.append("")
-    lines.append("| # | Test | File | Shard |")
-    lines.append("|---|------|------|-------|")
-    for i, test_id in enumerate(unique_tests, 1):
-        # Parse test_id: "test/inductor/test_foo.py::TestClass::test_method"
-        parts = test_id.split("::")
-        test_file = parts[0] if parts else test_id
-        test_name = parts[-1] if len(parts) > 1 else ""
-        # Find which shard
-        shard = "?"
+    # Helper: group tests by file
+    def group_by_file(test_list):
+        groups = OrderedDict()
+        for t in test_list:
+            parts = t.split("::")
+            f = parts[0] if parts else t
+            if f not in groups:
+                groups[f] = []
+            groups[f].append(t)
+        return groups
+
+    # Helper: find job info for a test
+    def find_job(test_id):
         for f in failures:
             if test_id in f.get("failed_tests", []):
-                # Extract shard number from job name
                 jn = f["job_name"]
+                shard = "?"
                 if "test (default," in jn:
                     shard = jn.split("test (default,")[1].split(",")[0].strip()
-                break
-        lines.append(f"| {i} | `{test_name}` | `{test_file}` | {shard} |")
+                return f["job_url"], jn, shard
+        return "", "", "?"
 
-    lines.append("")
-
-    # Detailed per-failure info
-    lines.append("### Detailed Failures")
-    lines.append("")
-    for i, test_id in enumerate(unique_tests, 1):
-        parts = test_id.split("::")
-        test_file = parts[0] if parts else test_id
-        test_class = parts[1] if len(parts) > 1 else ""
-        test_name = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else "")
-
-        lines.append(f"#### {i}. `{test_name}`")
+    # --- NEW Failures Section ---
+    if new_tests:
+        new_groups = group_by_file(new_tests)
+        lines.append(f"### NEW Failures ({n_new} tests in {len(new_groups)} file(s))")
         lines.append("")
-        lines.append(f"- **Full ID:** `{test_id}`")
-        lines.append(f"- **File:** `{test_file}`")
-        lines.append(f"- **Class:** `{test_class}`")
-
-        # Find job info
-        for f in failures:
-            if test_id in f.get("failed_tests", []):
-                lines.append(f"- **Job:** [{f['job_name']}]({f['job_url']})")
-                break
-
-        lines.append(f"- **Bisect Status:** Pending")
-        lines.append(f"- **Fix Status:** Pending")
+        lines.append("| # | Test File | Count | Shard | Job |")
+        lines.append("|---|-----------|:-----:|-------|-----|")
+        for i, (test_file, tests) in enumerate(new_groups.items(), 1):
+            short = test_file.split("/")[-1]
+            url, jn, shard = find_job(tests[0])
+            job_link = f"[shard {shard}]({url})" if url else f"shard {shard}"
+            lines.append(f"| {i} | `{short}` | {len(tests)} | {job_link} | `{jn}` |")
         lines.append("")
+
+        # Collapsible details per file group
+        for i, (test_file, tests) in enumerate(new_groups.items(), 1):
+            short = test_file.split("/")[-1]
+            lines.append(f"<details>")
+            lines.append(f"<summary><b>{i}. {short}</b> ({len(tests)} failures)</summary>")
+            lines.append("")
+            for t in tests:
+                name = t.split("::")[-1]
+                lines.append(f"- `{name}`")
+            lines.append("")
+            lines.append(f"</details>")
+            lines.append("")
+
+    # --- EXISTING Failures Section ---
+    if existing_tests:
+        existing_groups = group_by_file(existing_tests)
+        lines.append(f"### Existing Failures ({n_existing} tests, also failed in previous run)")
+        lines.append("")
+        lines.append("| # | Test File | Count | Shard |")
+        lines.append("|---|-----------|:-----:|-------|")
+        for i, (test_file, tests) in enumerate(existing_groups.items(), 1):
+            short = test_file.split("/")[-1]
+            _, _, shard = find_job(tests[0])
+            lines.append(f"| {i} | `{short}` | {len(tests)} | {shard} |")
+        lines.append("")
+
+        lines.append("<details>")
+        lines.append("<summary>Show existing failures</summary>")
+        lines.append("")
+        for t in existing_tests:
+            name = t.split("::")[-1]
+            lines.append(f"- `{name}`")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    # --- FIXED Section ---
+    if fixed_tests:
+        lines.append(f"### Fixed ({n_fixed} tests, was failing, now passing)")
+        lines.append("")
+        lines.append("<details>")
+        lines.append("<summary>Show fixed tests</summary>")
+        lines.append("")
+        for t in fixed_tests:
+            name = t.split("::")[-1]
+            lines.append(f"- `{name}`")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    # --- Fallback: if no new/existing classification available ---
+    if not new_tests and not existing_tests:
+        all_groups = group_by_file(unique_tests)
+        lines.append(f"### All Failures ({len(unique_tests)} tests in {len(all_groups)} file(s))")
+        lines.append("")
+        for i, (test_file, tests) in enumerate(all_groups.items(), 1):
+            short = test_file.split("/")[-1]
+            lines.append(f"<details>")
+            lines.append(f"<summary><b>{i}. {short}</b> ({len(tests)} failures)</summary>")
+            lines.append("")
+            for t in tests:
+                name = t.split("::")[-1]
+                lines.append(f"- `{name}`")
+            lines.append("")
+            lines.append(f"</details>")
+            lines.append("")
 
     # Commands section
     lines.extend([
@@ -101,10 +176,8 @@ def format_issue_body(data):
         "| Command | Action |",
         "|---------|--------|",
         "| `/approve` | Submit all fixes as PR(s) to pytorch/pytorch |",
-        "| `/approve N` | Submit fix for failure #N only |",
-        "| `/revise N <feedback>` | Request changes on failure #N |",
-        "| `/rerun N --since YYYY-MM-DD` | Re-bisect failure #N with new params |",
-        "| `/skip N` | Mark failure #N for manual handling |",
+        "| `/approve N` | Submit fix for group #N only |",
+        "| `/skip N` | Mark group #N for manual handling |",
         "| `/status` | Show current status |",
         "",
         "---",
@@ -114,14 +187,14 @@ def format_issue_body(data):
     return "\n".join(lines)
 
 
-def check_existing_issue(date_str):
-    """Check if an issue for today already exists."""
+def check_existing_issue(commit_short):
+    """Check if an issue for this commit already exists."""
     url = f"https://api.github.com/repos/{TRACKING_REPO}/issues"
-    params = {"state": "open", "labels": "ci-nightly", "per_page": 10}
+    params = {"state": "open", "labels": "ci-nightly", "per_page": 20}
     resp = requests.get(url, headers=HEADERS, params=params)
     if resp.status_code == 200:
         for issue in resp.json():
-            if date_str in issue["title"]:
+            if commit_short in issue["title"]:
                 return issue["number"]
     return None
 
@@ -206,26 +279,34 @@ def main():
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     commit_short = data.get("commit_sha", "unknown")[:12]
     n_failures = len(data.get("unique_failed_tests", []))
+    n_new = len(data.get("new_failed_tests", []))
+    n_existing = len(data.get("existing_failed_tests", []))
 
     if data["status"] == "ALL_PASS":
         title = f"[XPU CI] {date_str} - ALL PASS ({commit_short})"
     else:
-        title = f"[XPU CI] {date_str} - {n_failures} failure(s) ({commit_short})"
+        if n_new > 0 or n_existing > 0:
+            title = f"[XPU CI] {date_str} - {n_new} new, {n_existing} existing failure(s) ({commit_short})"
+        else:
+            title = f"[XPU CI] {date_str} - {n_failures} failure(s) ({commit_short})"
 
     if args.dry_run:
         print(f"=== TITLE ===\n{title}\n")
         print(f"=== BODY ===\n{body}")
         return
 
-    # Check if today's issue already exists
-    existing = check_existing_issue(date_str)
+    # Check if an issue for the same commit already exists (update it)
+    # Different commit = new issue
+    existing = check_existing_issue(commit_short)
     if existing:
-        print(f"Updating existing issue #{existing}")
+        print(f"Updating existing issue #{existing} (same commit {commit_short})")
         update_issue(existing, body)
     else:
         labels = ["ci-nightly"]
         if data["status"] != "ALL_PASS":
             labels.append("has-failures")
+        if n_new > 0:
+            labels.append("new-failures")
         create_issue(title, body, labels)
 
 
