@@ -27,7 +27,7 @@ jobs:
       - name: Check XPU CI status
         id: check
         env:
-          GITHUB_TOKEN: ${{ secrets.PYTORCH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python tools/ci_monitor/check_nightly_status.py \
             --days ${{ inputs.days || '1' }} \
