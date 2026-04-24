@@ -9,7 +9,7 @@ import sys
 import json
 import argparse
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 HEADERS = {
@@ -19,18 +19,19 @@ HEADERS = {
 PYTORCH_REPO = "pytorch/pytorch"
 API_BASE = f"https://api.github.com/repos/{PYTORCH_REPO}"
 
-XPU_WORKFLOW_PATTERNS = ["xpu", "linux-noble-xpu", "win-vs2022-xpu"]
+# XPU CI workflow ID in pytorch/pytorch
+# Found via: GET /repos/pytorch/pytorch/actions/workflows -> name="xpu", path=".github/workflows/xpu.yml"
+XPU_WORKFLOW_ID = 79954307
 
 
 def get_latest_xpu_runs(days=1):
-    """Get recent XPU CI workflow runs."""
-    since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    url = f"{API_BASE}/actions/runs"
-    params = {"per_page": 50, "status": "completed", "created": f">={since}"}
+    """Get recent XPU CI workflow runs from the dedicated xpu workflow."""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{API_BASE}/actions/workflows/{XPU_WORKFLOW_ID}/runs"
+    params = {"per_page": 10, "status": "completed", "created": f">={since}"}
     resp = requests.get(url, headers=HEADERS, params=params)
     resp.raise_for_status()
-    runs = resp.json().get("workflow_runs", [])
-    return [r for r in runs if any(p in r["name"].lower() for p in XPU_WORKFLOW_PATTERNS)]
+    return resp.json().get("workflow_runs", [])
 
 
 def get_failed_jobs(run_id):
