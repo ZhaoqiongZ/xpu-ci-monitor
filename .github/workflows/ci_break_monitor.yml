@@ -1,44 +1,73 @@
 name: XPU CI Break Monitor
 on:
-  schedule:
-    - cron: '0 4 * * *'  # Every day UTC 4:00 (Beijing 12:00)
   workflow_dispatch:
     inputs:
+      steps:
+        description: 'Which steps to run'
+        type: choice
+        options:
+          - all
+          - step1_scan
+          - step2_summary_issue
+          - step3_sub_issues
+        default: 'all'
       days:
         description: 'Look back N days'
-        default: '1'
+        default: '3'
       parse_logs:
         description: 'Parse job logs for test names'
         type: boolean
         default: true
+      summary_issue_number:
+        description: 'Summary issue # (for step3 alone; ignored when running all or step1/step2)'
+        default: ''
 
 jobs:
-  check-xpu-ci:
+  ci-monitor:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
       - run: pip install requests
 
-      - name: Check XPU CI status
+      # ===== Step 1: Scan PyTorch XPU CI =====
+      - name: "Step 1: Scan PyTorch XPU CI"
         id: check
+        if: ${{ inputs.steps == 'all' || inputs.steps == 'step1_scan' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python tools/ci_monitor/check_nightly_status.py \
-            --days ${{ inputs.days || '1' }} \
+            --days ${{ inputs.days }} \
             --event schedule \
-            ${{ inputs.parse_logs && '--parse-logs' || '--parse-logs' }} \
+            --num-runs 2 \
+            ${{ inputs.parse_logs && '--parse-logs' || '' }} \
             --output ci_results.json \
             --save-all-runs all_runs.json
 
-      - name: Create tracking issue (if failures)
+      - name: Upload scan results
+        if: ${{ inputs.steps == 'all' || inputs.steps == 'step1_scan' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-scan-results
+          path: |
+            ci_results.json
+            all_runs.json
+
+      # For step2/step3 alone, download previously uploaded artifacts
+      - name: Download previous scan results
+        if: ${{ inputs.steps == 'step2_summary_issue' || inputs.steps == 'step3_sub_issues' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-scan-results
+        continue-on-error: true
+
+      # ===== Step 2: Create summary issue =====
+      - name: "Step 2: Create summary issue"
         id: create_issue
-        if: steps.check.outputs.has_failures == 'true'
+        if: ${{ (inputs.steps == 'all' && steps.check.outputs.has_failures == 'true') || inputs.steps == 'step2_summary_issue' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -46,21 +75,23 @@ jobs:
             --input ci_results.json \
             --all-runs all_runs.json
 
-      - name: Classify failures and create sub-issues
-        if: steps.create_issue.outputs.issue_number
+      # ===== Step 3: Classify and create sub-issues =====
+      - name: "Step 3: Classify and create sub-issues"
+        if: ${{ inputs.steps == 'all' || inputs.steps == 'step3_sub_issues' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ISSUE_NUM="${{ inputs.summary_issue_number }}"
+          if [ -z "$ISSUE_NUM" ]; then
+            ISSUE_NUM="${{ steps.create_issue.outputs.issue_number }}"
+          fi
+          if [ -z "$ISSUE_NUM" ]; then
+            echo "ERROR: No summary issue number."
+            echo "Provide summary_issue_number input or run step2 first."
+            exit 1
+          fi
+          echo "Using summary issue #$ISSUE_NUM"
           python tools/ci_monitor/classify_failures.py \
             --input ci_results.json \
-            --summary-issue ${{ steps.create_issue.outputs.issue_number }} \
+            --summary-issue $ISSUE_NUM \
             --days 7
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-results
-          path: |
-            ci_results.json
-            all_runs.json

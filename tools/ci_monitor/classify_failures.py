@@ -177,8 +177,13 @@ def format_commits(commits):
     return result
 
 
-def create_sub_issue(summary_issue_num, group_num, classification, test_names):
-    """Create a sub-issue for a failure group."""
+def create_sub_issue(summary_issue_num, group_num, classification, test_names,
+                     commit_sha="unknown"):
+    """Create a sub-issue for a failure group.
+
+    Embeds a machine-readable REPRO_START/REPRO_END JSON block in the issue body
+    so that fetch_and_reproduce.py can parse and execute reproduce commands.
+    """
     cat = classification["category"]
     test_file = classification["test_file"]
     short_file = test_file.split("/")[-1] if "/" in test_file else test_file
@@ -267,10 +272,40 @@ def create_sub_issue(summary_issue_num, group_num, classification, test_names):
             "- [ ] Classify and fix",
         ])
 
+    # Embed machine-readable reproduce instructions for fetch_and_reproduce.py
+    # Extract test method names for -k filter
+    test_method_names = []
+    for t in test_names:
+        parts = t.split("::")
+        test_method_names.append(parts[-1] if len(parts) > 1 else t)
+
+    repro_data = {
+        "commit_sha": commit_sha,
+        "test_file": test_file,
+        "test_names": test_method_names[:20],  # cap to avoid huge JSON
+        "category": cat,
+        "suspect_commits": [sc["sha"] for sc in classification.get("suspect_commits", [])],
+        "repro_commands": [
+            f"git fetch origin && git checkout {commit_sha}",
+            "source .env && python setup.py clean && pip install -e . -v --no-build-isolation",
+        ] + [
+            f"source .env && python {test_file} -k {name} 2>&1 | tail -80"
+            for name in test_method_names[:5]  # first 5 tests
+        ],
+    }
+    body_lines.append("")
+    body_lines.append("---")
+    body_lines.append("")
+    body_lines.append("<!-- REPRO_START -->")
+    body_lines.append("```json")
+    body_lines.append(json.dumps(repro_data, indent=2))
+    body_lines.append("```")
+    body_lines.append("<!-- REPRO_END -->")
+
     body = "\n".join(body_lines)
 
     # Determine labels
-    labels = ["ci-fix", f"category:{cat.lower()}"]
+    labels = ["ci-fix", f"category:{cat.lower()}", "needs-repro"]
     if is_new:
         labels.append("new-failure")
 
@@ -302,6 +337,7 @@ def main():
     with open(args.input) as f:
         data = json.load(f)
 
+    commit_sha = data.get("commit_sha", "unknown")
     new_tests = data.get("new_failed_tests", [])
     existing_tests = data.get("existing_failed_tests", [])
 
@@ -341,7 +377,8 @@ def main():
         all_classifications.append(classification)
 
         if not args.dry_run:
-            create_sub_issue(args.summary_issue, group_num, classification, tests)
+            create_sub_issue(args.summary_issue, group_num, classification, tests,
+                             commit_sha=commit_sha)
         print()
 
     # Process EXISTING failures
@@ -355,7 +392,8 @@ def main():
         all_classifications.append(classification)
 
         if not args.dry_run:
-            create_sub_issue(args.summary_issue, group_num, classification, tests)
+            create_sub_issue(args.summary_issue, group_num, classification, tests,
+                             commit_sha=commit_sha)
         print()
 
     # Summary
