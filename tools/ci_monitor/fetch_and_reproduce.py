@@ -126,11 +126,11 @@ def reproduce_issue(repro_data, dry_run=False):
         results["build_status"] = "dry_run"
         return results
 
-    # Step 1: checkout
+    # Step 1: checkout + submodule sync
     print(f"  Checking out {commit_sha[:12]}...")
     rc, out = run_command(
-        f"git fetch origin && git checkout {commit_sha}",
-        cwd=PYTORCH_DIR, timeout=120
+        f"git fetch origin && git checkout {commit_sha} && git submodule sync && git submodule update --init --recursive",
+        cwd=PYTORCH_DIR, timeout=300
     )
     if rc != 0:
         print(f"  ERROR: checkout failed (rc={rc})")
@@ -138,11 +138,11 @@ def reproduce_issue(repro_data, dry_run=False):
         results["build_log"] = out
         return results
 
-    # Step 2: build
+    # Step 2: build (BKC: bdist_wheel + pip install)
     print("  Building PyTorch (this may take a while)...")
     rc, out = run_command(
-        "source .env && python setup.py clean && pip install -e . -v --no-build-isolation",
-        cwd=PYTORCH_DIR, timeout=3600
+        "source .env && python setup.py clean && rm -rf dist && python setup.py bdist_wheel && pip install --force-reinstall dist/torch-*.whl",
+        cwd=PYTORCH_DIR, timeout=7200
     )
     if rc != 0:
         print(f"  ERROR: build failed (rc={rc})")
