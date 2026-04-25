@@ -87,7 +87,8 @@ def run_command(cmd, cwd=None, timeout=1800):
     try:
         result = subprocess.run(
             cmd, shell=True, cwd=cwd,
-            capture_output=True, text=True, timeout=timeout
+            capture_output=True, text=True, timeout=timeout,
+            executable='/bin/bash'
         )
         output = result.stdout + result.stderr
         lines = output.strip().split("\n")
